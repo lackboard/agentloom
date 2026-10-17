@@ -1,0 +1,60 @@
+# 本机密钥与配置
+.env
+.env.*
+!.env.example
+config.yaml
+config.local.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+
+# AgentLoom 运行数据与本地产物
+.agentloom/
+output/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Python 虚拟环境、缓存与测试产物
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Node、Vite 与 TypeScript 构建产物
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
+
+# Playwright 本地状态与报告
+.playwright-cli/
+playwright-report/
+test-results/
+
+# 编辑器和操作系统本地文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+*~

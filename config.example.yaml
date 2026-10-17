@@ -1,0 +1,61 @@
+# AgentLoom 可提交的配置样例。复制为 config.yaml 后按本机环境修改。
+# config.yaml 与 .env 已加入 .gitignore，不会提交到版本库。
+
+server:
+  host: 127.0.0.1                 # 只监听本机；没有鉴权时不要改成 0.0.0.0
+  port: 8000                      # FastAPI 监听端口
+  workers: 1                      # 首版固定单进程，避免破坏本地运行锁语义
+  allowed_origins:                # 允许访问 API 的前端开发地址
+    - http://127.0.0.1:5173
+
+database:
+  app_path: .agentloom/app.sqlite                 # 业务库：Thread、Run、消息、事件等
+  checkpoint_path: .agentloom/checkpoints.sqlite # 框架库：LangGraph 执行状态
+
+models:
+  default:
+    provider: fake                 # fake、openai_compatible 或 anthropic
+    model: scripted-tool-model     # fake 时仅作标识；真实模式填写账户可用的精确模型 ID
+    api_key_env: MODEL_API_KEY     # Anthropic 建议改为 ANTHROPIC_API_KEY
+    base_url_env: MODEL_BASE_URL   # Anthropic 建议改为 ANTHROPIC_BASE_URL；官方地址均留空
+    context_window: 32768          # 模型上下文窗口，用于后续预算与压缩判断
+    max_output_tokens: 4096        # 单次模型调用的最大输出 token
+    temperature: 0.0               # 可设为 null，让不接受采样参数的模型使用服务商默认值
+    timeout_seconds: 60            # 单次 HTTP 请求超时
+    max_retries: 2                 # 模型适配层允许的重试次数
+
+runtime:
+  max_running_runs: 2              # 全进程最多同时执行的 Run
+  max_pending_runs: 8              # 最多允许等待执行的 Run
+  max_model_attempts_per_run: 24   # 一个 Run 的模型请求尝试预算
+  max_tool_executions_per_run: 40  # 一个 Run 的工具实际执行预算
+  max_subagents_per_run: 4         # 一个 Run 最多创建的子任务总数
+  max_running_subagents: 2         # 全进程同时运行的子任务数
+  subagent_timeout_seconds: 120    # 单个子任务从开始执行到返回结果的超时秒数
+
+sandbox:
+  image: agentloom-python:v1       # M2 使用的 Docker 镜像
+  network: none                    # 默认禁止沙箱联网
+  timeout_seconds: 60              # 单次沙箱执行超时
+  memory_mb: 512                   # 容器内存上限
+  cpu_limit: 1.0                   # 单个命令最多使用的 CPU 核数
+  pids_limit: 64                   # 容器内最大进程数，限制 fork 型资源消耗
+  tmpfs_mb: 64                     # 容器 /tmp 的内存文件系统上限
+  output_max_bytes: 20000          # stdout/stderr 各自保留的最大字节数，仍会继续排空管道
+
+skills:
+  directory: ./skills              # 本地 Skill 根目录，相对项目根目录
+  max_active_per_agent: 1          # 单个 Agent 同时激活的 Skill 数
+
+context:
+  compaction_fraction: 0.70        # 达到上下文窗口此比例后考虑压缩
+  tool_preview_bytes: 8192         # 大工具输出进入模型前的最大预览字节数
+
+mcp:
+  enabled: true                    # 启动仓库内只读 reference_library MCP Server
+  reference_library_script: ./mcp_servers/reference_library/server.py # 本地 stdio Server 入口
+  startup_timeout_seconds: 10      # 子进程初始化和 tools/list 的最长等待时间
+  call_timeout_seconds: 10         # 单次 MCP 工具调用超时；超时只影响当前工具
+
+tracing:
+  external_enabled: false          # 是否启用外部追踪；默认不发送任何数据

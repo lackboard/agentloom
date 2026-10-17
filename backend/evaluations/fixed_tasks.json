@@ -1,0 +1,196 @@
+[
+  {
+    "id": "FC-01",
+    "category": "file_code",
+    "prompt": "必须调用 add 工具计算 19 + 23，然后只根据工具结果回答，并在最终回答中写出 42。",
+    "acceptance": {"final_contains_all": ["42"], "tools_all": ["add"]}
+  },
+  {
+    "id": "FC-02",
+    "category": "file_code",
+    "prompt": "必须调用 lookup_note，topic 精确填写 AgentLoom。根据工具结果说明 AgentLoom 怎样组装，并保留关键词 create_agent。",
+    "acceptance": {"final_contains_all": ["create_agent"], "tools_all": ["lookup_note"]}
+  },
+  {
+    "id": "FC-03",
+    "category": "file_code",
+    "prompt": "读取我上传的文本附件，最终原样回答其中的校验标记。必须使用 read_file。",
+    "attachments": [{"name": "marker.txt", "content": "项目说明\n校验标记：ALPHA-73\n", "mime_type": "text/plain"}],
+    "acceptance": {"final_contains_all": ["ALPHA-73"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "FC-04",
+    "category": "file_code",
+    "prompt": "使用 write_file 在 outputs/hello.md 新建文件，内容必须包含标题“# Hello AgentLoom”和一行“evaluation-ready”；再调用 present_files 展示它。不要使用 bash。",
+    "acceptance": {"tools_all": ["write_file", "present_files"], "artifact": {"name": "hello.md", "contains_all": ["# Hello AgentLoom", "evaluation-ready"]}}
+  },
+  {
+    "id": "FC-05",
+    "category": "file_code",
+    "prompt": "使用 write_file 创建 outputs/config.json，写入合法 JSON，必须包含键 enabled=true 和 name=agentloom；调用 present_files。不要使用 bash。",
+    "acceptance": {"tools_all": ["write_file", "present_files"], "artifact": {"name": "config.json", "contains_all": ["enabled", "true", "agentloom"]}}
+  },
+  {
+    "id": "FC-06",
+    "category": "file_code",
+    "prompt": "分别读取两个上传附件，最终同时给出两个校验标记。必须对两个虚拟路径调用 read_file。",
+    "attachments": [
+      {"name": "left.txt", "content": "LEFT-17", "mime_type": "text/plain"},
+      {"name": "right.txt", "content": "RIGHT-29", "mime_type": "text/plain"}
+    ],
+    "acceptance": {"final_contains_all": ["LEFT-17", "RIGHT-29"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "FC-07",
+    "category": "file_code",
+    "prompt": "调用 list_dir 查看 /mnt/user-data/uploads，再告诉我其中上传文件的名字。",
+    "attachments": [{"name": "visible-name.txt", "content": "内容不重要", "mime_type": "text/plain"}],
+    "acceptance": {"final_contains_all": ["visible-name.txt"], "tools_all": ["list_dir"]}
+  },
+  {
+    "id": "FC-08",
+    "category": "file_code",
+    "prompt": "使用 write_file 创建 outputs/square.py，定义函数 def square(n)，函数返回 n * n；调用 present_files。不要使用 bash，也不要声称已经运行测试。",
+    "acceptance": {"tools_all": ["write_file", "present_files"], "artifact": {"name": "square.py", "contains_all": ["def square", "return n * n"]}}
+  },
+  {
+    "id": "FC-09",
+    "category": "file_code",
+    "prompt": "调用 read_file 读取 /mnt/user-data/uploads/not-found.txt。读取失败后不要伪造内容，最终回答必须写出工具返回的错误码或明确说明文件不存在。",
+    "acceptance": {"final_contains_any": ["FILE_NOT_FOUND", "不存在", "not found"], "tools_all": ["read_file"], "manual_review": "确认回答没有伪造缺失文件的正文。"}
+  },
+  {
+    "id": "FC-10",
+    "category": "file_code",
+    "prompt": "使用 write_file 创建 outputs/README.md，包含三个二级标题：## 安装、## 运行、## 限制；调用 present_files。不要使用 bash。",
+    "acceptance": {"tools_all": ["write_file", "present_files"], "artifact": {"name": "README.md", "contains_all": ["## 安装", "## 运行", "## 限制"]}}
+  },
+  {
+    "id": "DA-01",
+    "category": "data",
+    "prompt": "读取上传 CSV，计算 amount 列总和。必须使用 read_file，最终回答写出 100。不要使用 bash。",
+    "attachments": [{"name": "amounts.csv", "content": "item,amount\nA,10\nB,20\nC,30\nD,40\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["100"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-02",
+    "category": "data",
+    "prompt": "读取上传 CSV，计算 amount 的平均值。必须使用 read_file，最终回答写出 25。不要使用 bash。",
+    "attachments": [{"name": "average.csv", "content": "item,amount\nA,10\nB,20\nC,30\nD,40\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["25"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-03",
+    "category": "data",
+    "prompt": "读取上传 CSV，找出 amount 最大的 product 和数值。最终回答必须同时包含 Beta 和 40。不要使用 bash。",
+    "attachments": [{"name": "maximum.csv", "content": "product,amount\nAlpha,12\nBeta,40\nGamma,25\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["Beta", "40"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-04",
+    "category": "data",
+    "prompt": "读取上传 CSV，统计数据行数，不包含表头。最终回答写出 4 行。不要使用 bash。",
+    "attachments": [{"name": "rows.csv", "content": "id,value\n1,a\n2,b\n3,c\n4,d\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["4"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-05",
+    "category": "data",
+    "prompt": "读取上传 CSV，统计 score 列空值数量。最终回答必须明确是 2 个。不要使用 bash。",
+    "attachments": [{"name": "missing.csv", "content": "id,score\n1,9\n2,\n3,7\n4,\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["2"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-06",
+    "category": "data",
+    "prompt": "读取上传 CSV，按 region 汇总 amount。最终回答必须同时包含 East=25 和 West=20。不要使用 bash。",
+    "attachments": [{"name": "regions.csv", "content": "region,amount\nEast,10\nWest,8\nEast,15\nWest,12\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["East", "25", "West", "20"], "tools_all": ["read_file"]}
+  },
+  {
+    "id": "DA-07",
+    "category": "data",
+    "prompt": "读取上传 CSV，使用 write_file 创建 outputs/summary.md，报告必须包含“总和：100”和“记录数：4”，再调用 present_files。不要使用 bash。",
+    "attachments": [{"name": "report-data.csv", "content": "item,amount\nA,10\nB,20\nC,30\nD,40\n", "mime_type": "text/csv"}],
+    "acceptance": {"tools_all": ["read_file", "write_file", "present_files"], "artifact": {"name": "summary.md", "contains_all": ["总和", "100", "记录数", "4"]}}
+  },
+  {
+    "id": "DA-08",
+    "category": "data",
+    "prompt": "读取上传 CSV。value 列有一个非数字 oops；只汇总有效数字并明确指出坏值，最终回答包含 30 和 oops。不要使用 bash。",
+    "attachments": [{"name": "dirty.csv", "content": "id,value\n1,10\n2,oops\n3,20\n", "mime_type": "text/csv"}],
+    "acceptance": {"final_contains_all": ["30", "oops"], "tools_all": ["read_file"], "manual_review": "确认回答说明排除坏值的口径，而非把 oops 当作 0 后不加说明。"}
+  },
+  {
+    "id": "RT-01",
+    "category": "retrieval",
+    "prompt": "必须调用 reference_library 的 MCP 检索工具查询 mcp。最终回答给出资料 source，并包含 local://reference-library/mcp-protocol。",
+    "acceptance": {"final_contains_all": ["local://reference-library/mcp-protocol"], "tools_all": ["mcp__reference_library__search_references"]}
+  },
+  {
+    "id": "RT-02",
+    "category": "retrieval",
+    "prompt": "必须调用 reference_library 的 get_reference，reference_id=sqlite-wal。根据返回资料回答 SQLite 同时有几个写者，并保留 source URI。",
+    "acceptance": {"final_contains_all": ["一个写者", "local://reference-library/sqlite-wal"], "tools_all": ["mcp__reference_library__get_reference"]}
+  },
+  {
+    "id": "RT-03",
+    "category": "retrieval",
+    "prompt": "调用 reference_library 的 get_reference 读取 deerflow-agent-runtime。最终回答必须包含模型、工具、中间件、状态四个词。",
+    "acceptance": {"final_contains_all": ["模型", "工具", "中间件", "状态"], "tools_all": ["mcp__reference_library__get_reference"]}
+  },
+  {
+    "id": "RT-04",
+    "category": "retrieval",
+    "prompt": "调用 reference_library 的搜索工具查询 transaction。最终回答给出命中的稳定 id 和 source。",
+    "acceptance": {"final_contains_all": ["sqlite-wal", "local://reference-library/sqlite-wal"], "tools_all": ["mcp__reference_library__search_references"]}
+  },
+  {
+    "id": "RT-05",
+    "category": "retrieval",
+    "prompt": "调用 reference_library 的 get_reference，reference_id=missing-entry。根据真实工具结果回答，必须保留错误码 REFERENCE_NOT_FOUND。",
+    "acceptance": {"final_contains_all": ["REFERENCE_NOT_FOUND"], "tools_all": ["mcp__reference_library__get_reference"]}
+  },
+  {
+    "id": "RT-06",
+    "category": "retrieval",
+    "prompt": "调用 reference_library 的搜索工具查询完全不存在的关键词 zzz-no-match。最终回答明确 count 为 0，不得编造来源。",
+    "acceptance": {"final_contains_any": ["count 为 0", "count=0", "0 条", "没有匹配"], "tools_all": ["mcp__reference_library__search_references"], "manual_review": "确认没有编造工具未返回的资料来源。"}
+  },
+  {
+    "id": "AG-01",
+    "category": "delegation",
+    "prompt": "必须调用一次 task，把任务委派给 researcher：调用 add 计算 11+12，并在摘要中写出 23。收到结果后 Lead 最终回答 23，不要自己调用 add。",
+    "acceptance": {"final_contains_all": ["23"], "tools_all": ["task"], "subagents_min": 1}
+  },
+  {
+    "id": "AG-02",
+    "category": "delegation",
+    "prompt": "必须调用一次 task，把任务委派给 researcher：调用 lookup_note 查询 AgentLoom，并在摘要保留 create_agent。Lead 根据子任务结果回答，不要自己调用 lookup_note。",
+    "acceptance": {"final_contains_all": ["create_agent"], "tools_all": ["task"], "subagents_min": 1}
+  },
+  {
+    "id": "AG-03",
+    "category": "delegation",
+    "prompt": "在同一轮并行调用两次 task，均使用 researcher。第一个要求调用 add 算 10+11，第二个要求调用 add 算 20+22。Lead 汇总时必须同时写出 21 和 42，不要自己调用 add。",
+    "acceptance": {"final_contains_all": ["21", "42"], "tools_all": ["task"], "subagents_min": 2}
+  },
+  {
+    "id": "AG-04",
+    "category": "delegation",
+    "prompt": "必须调用一次 task，agent_type=coder。要求 Coder 用 write_file 在自己的 workspace 创建 answer.txt，内容包含 CODE-17，并在摘要中写出 CODE-17。Lead 最终回答也保留 CODE-17。",
+    "acceptance": {"final_contains_all": ["CODE-17"], "tools_all": ["task"], "subagents_min": 1}
+  },
+  {
+    "id": "AG-05",
+    "category": "delegation",
+    "prompt": "必须调用一次 task 给 researcher，让它通过 MCP get_reference 读取 sqlite-wal，并返回资料里的写者数量和 source。Lead 最终回答必须包含一个写者。",
+    "acceptance": {"final_contains_all": ["一个写者"], "tools_all": ["task"], "subagents_min": 1}
+  },
+  {
+    "id": "AG-06",
+    "category": "delegation",
+    "prompt": "同一轮调用两个 researcher task：一个调用 add 计算 3+4；另一个调用 MCP get_reference 查询 missing-entry 并如实返回错误码。Lead 最终同时写出 7 和 REFERENCE_NOT_FOUND。",
+    "acceptance": {"final_contains_all": ["7", "REFERENCE_NOT_FOUND"], "tools_all": ["task"], "subagents_min": 2, "manual_review": "确认一个子任务得到错误结果时，另一个子任务的正确结果没有丢失。"}
+  }
+]

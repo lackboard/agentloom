@@ -1,0 +1,50 @@
+[project]
+name = "agentloom"
+version = "0.1.0"
+description = "A small agent harness built while studying DeerFlow"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alembic>=1.16,<2",
+    "fastapi>=0.116,<1",
+    "langchain>=1.3,<2",
+    "langchain-anthropic>=1,<2",
+    "langchain-core>=1.4.9,<2",
+    "langchain-openai>=1.2.1,<2",
+    "langgraph>=1.2.9,<1.3",
+    "langgraph-checkpoint-sqlite>=3.1.1,<4",
+    "pydantic>=2.11,<3",
+    "python-multipart>=0.0.20,<1",
+    "python-dotenv>=1.1,<2",
+    "pyyaml>=6,<7",
+    "sqlalchemy>=2.0,<2.1",
+    "uvicorn>=0.30,<1",
+    "langchain-mcp-adapters==0.2.2",
+    "mcp==1.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<1",
+    "pytest>=8.3,<9",
+    "ruff>=0.11,<0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+    "live: calls a real model provider and requires explicit opt-in",
+    "docker: requires a working Docker daemon",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
