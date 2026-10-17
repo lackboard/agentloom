@@ -53,6 +53,7 @@ Thumbs.db
 Desktop.ini
 
 # 临时文件
+.tools/
 *.tmp
 *.temp
 *.bak
