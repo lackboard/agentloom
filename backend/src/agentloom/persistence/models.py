@@ -1,11 +1,11 @@
-"""SQLAlchemy mappings for the nine application tables.
+"""SQLAlchemy mappings for AgentLoom application tables.
 
 The Alembic baseline remains the schema source of truth. Chinese ``comment``
 values document field meaning in Python metadata; SQLite itself does not store
 column comments for Navicat to display.
 """
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, PrimaryKeyConstraint, UniqueConstraint
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, Index, PrimaryKeyConstraint, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -33,6 +33,7 @@ class RunRow(Base):
     __table_args__ = (UniqueConstraint("thread_id", "client_request_id"), UniqueConstraint("id", "thread_id"))
 
     id: Mapped[str] = mapped_column(primary_key=True, comment="服务端生成的 Run UUID")
+    trace_id: Mapped[str] = mapped_column(unique=True, comment="服务端生成的端到端 Trace 标识")
     thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id"), comment="所属 Thread UUID")
     client_request_id: Mapped[str] = mapped_column(comment="客户端生成的幂等请求 UUID")
     request_hash: Mapped[str] = mapped_column(comment="规范化请求体的 SHA-256，用于发现同 ID 不同内容")
@@ -93,6 +94,45 @@ class RunEventRow(Base):
     scope: Mapped[str] = mapped_column(default="lead", comment="事件所属 Agent 或子任务范围")
     payload_json: Mapped[str] = mapped_column(comment="按事件类型校验后的载荷 JSON")
     created_at: Mapped[str] = mapped_column(comment="事件持久化时间，UTC ISO 8601 字符串")
+
+
+class TraceSpanRow(Base):
+    """一次 Run 内可组成父子调用树的安全追踪片段。"""
+
+    __tablename__ = "trace_spans"
+    __table_args__ = (
+        Index("ix_trace_spans_run_started", "run_id", "started_at"),
+        Index("ix_trace_spans_trace", "trace_id"),
+    )
+
+    id: Mapped[str] = mapped_column(primary_key=True, comment="Span 稳定标识；模型和工具优先复用回调 Run ID")
+    trace_id: Mapped[str] = mapped_column(comment="所属 Trace 标识，与 runs.trace_id 对应")
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), comment="所属 Agent Run UUID")
+    parent_span_id: Mapped[str | None] = mapped_column(
+        ForeignKey("trace_spans.id"), comment="父 Span；为空表示调用树根节点"
+    )
+    kind: Mapped[str] = mapped_column(comment="片段类型：run、model 或 tool")
+    name: Mapped[str] = mapped_column(comment="安全的模型名、工具名或运行名称")
+    status: Mapped[str] = mapped_column(default="running", comment="running、succeeded、failed 或 cancelled")
+    attributes_json: Mapped[str] = mapped_column(default="{}", comment="不含提示词、工具正文和密钥的结构化元数据")
+    started_at: Mapped[str] = mapped_column(comment="Span 开始时间，UTC ISO 8601 字符串")
+    finished_at: Mapped[str | None] = mapped_column(comment="Span 完成时间；执行中为空")
+    duration_ms: Mapped[int | None] = mapped_column(comment="完成后计算的墙钟耗时毫秒")
+    error_code: Mapped[str | None] = mapped_column(comment="失败时的稳定错误类型；成功时为空")
+
+
+class RunReplayRow(Base):
+    """从一个终态 Run 冻结出的历史证据回放。"""
+
+    __tablename__ = "run_replays"
+    __table_args__ = (UniqueConstraint("source_run_id", "evidence_hash"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True, comment="回放 UUID")
+    source_run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), comment="证据来源 Run UUID")
+    evidence_hash: Mapped[str] = mapped_column(comment="规范化回放证据的 SHA-256")
+    evidence_json: Mapped[str] = mapped_column(comment="冻结的消息、事件及工具结果证据 JSON")
+    status: Mapped[str] = mapped_column(default="completed", comment="回放状态；当前仅 completed")
+    created_at: Mapped[str] = mapped_column(comment="回放创建时间")
 
 
 class ToolExecutionRow(Base):
@@ -160,6 +200,29 @@ class SubagentTaskRow(Base):
     started_at: Mapped[str | None] = mapped_column(comment="子任务开始运行时间")
     finished_at: Mapped[str | None] = mapped_column(comment="子任务进入终态的时间")
     deadline_at: Mapped[str] = mapped_column(comment="子任务必须停止等待的 UTC 截止时间")
+
+
+class CoderChangeProposalRow(Base):
+    """Coder 私有工作区向父工作区提交的冻结变更提案。"""
+
+    __tablename__ = "coder_change_proposals"
+    __table_args__ = (UniqueConstraint("task_id", "manifest_hash"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True, comment="变更提案 UUID")
+    task_id: Mapped[str] = mapped_column(ForeignKey("subagent_tasks.id"), comment="来源 Coder 子任务 UUID")
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), comment="来源父 Run UUID")
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id"), comment="待接纳文件所属 Thread UUID")
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approvals.id"), unique=True, comment="绑定的审批 UUID")
+    status: Mapped[str] = mapped_column(
+        default="pending", comment="pending、rejected、verifying、accepted、failed 或 conflict"
+    )
+    manifest_hash: Mapped[str] = mapped_column(comment="文件 hash、diff 和验证命令的整体 SHA-256")
+    manifest_json: Mapped[str] = mapped_column(comment="冻结的文件清单、diff 与 Docker 命令 JSON")
+    verification_json: Mapped[str | None] = mapped_column(comment="Docker 退出码及截断后的标准输出证据 JSON")
+    error_code: Mapped[str | None] = mapped_column(comment="验证或接纳失败的稳定错误码")
+    error_message: Mapped[str | None] = mapped_column(comment="供用户诊断的失败说明")
+    created_at: Mapped[str] = mapped_column(comment="提案创建时间")
+    resolved_at: Mapped[str | None] = mapped_column(comment="拒绝或接纳完成时间")
 
 
 class ArtifactRow(Base):

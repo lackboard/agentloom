@@ -1,13 +1,15 @@
 # AgentLoom（织能）
 
-AgentLoom 是一个单用户、单进程的通用 Agent Harness，也是基于当前 DeerFlow 源码边学边实现的独立项目。M0～M6 已完成：模型工具循环、持久 Run、审批恢复、受控文件与 Docker、Skill、上下文管理、隔离子 Agent、MCP、显式偏好、React 工作台和真实评测均有可运行证据。
+AgentLoom 是一个单用户、单进程的通用 Agent Harness，也是基于当前 DeerFlow 源码边学边实现的独立项目。M0～M7 已完成：模型工具循环、持久 Run、审批恢复、受控文件与 Docker、Skill、上下文管理、隔离子 Agent、MCP、显式偏好、React 工作台、真实评测、持久化模型增量、Trace 调用树、历史证据回放、Coder 变更接纳和确定性故障演示均有可运行证据。
 
-DeerFlow 仓库 `D:\Forksourcefolder\deer-flow` 只用于阅读和设计对照。AgentLoom 不导入 DeerFlow 包，也不把原仓库作为运行依赖。当前技术状态和学习状态见 [PROGRESS.md](PROGRESS.md)。
+DeerFlow 只用于源码阅读和设计对照。AgentLoom 不导入 DeerFlow 包，也不把原仓库作为运行依赖。公开的架构、能力证据和验证结果位于 `docs/`。
 
 ## 已实现能力
 
 - LangChain `create_agent` 组装唯一正式执行链；fake/live 明确区分。
 - FastAPI 后台 Run、SQLite 业务事实、LangGraph 独立 checkpoint、可重连 SSE。
+- LangGraph `astream()` 模型增量先持久化再推送，最终消息按稳定 ID 覆盖 partial 内容。
+- Run/model/tool Trace Span、耗时/Token/错误码和 React 调用树时间线。
 - 同线程排他、重复请求幂等、共享模型/工具/子任务硬预算。
 - 文件虚拟路径、上传、hash 前置写入、不可变 Artifact、Docker Bash。
 - 工具审批、持久账本、重放、uncertain 人工处置、取消资源收尾。
@@ -86,6 +88,15 @@ cd frontend
 npx --yes pnpm@12.11.2 check
 ```
 
+M7 故障注入演示：
+
+```powershell
+cd backend
+uv run python labs/m7_fault_demo.py
+```
+
+它生成 `output/m7-fault-demo/report.json` 和 Markdown 报告，验证模型流失败收口、uncertain 写操作不盲重放，以及 Coder 验证失败不修改父工作区。该命令使用确定性 fake 故障；真实模型正常路径仍由 live smoke 单独验证。
+
 干净安装门禁会复制一个不含 `.env`、`config.yaml`、数据库、虚拟环境和 node_modules 的隔离副本，缓存及副本都在当前仓库所在盘的 `output/`：
 
 ```powershell
@@ -127,8 +138,8 @@ uv run python -m agentloom.evaluation `
 - [架构、数据流和框架边界](docs/ARCHITECTURE.md)
 - [能力与代码/测试证据映射](docs/CAPABILITY_EVIDENCE.md)
 - [M6 真实评测](docs/M6_EVALUATION.md)
-- [详细设计](design.zh-CN.md)、[验收标准](ACCEPTANCE.md)、[学习路线](LEARNING.md)
-- [DeerFlow 源码阅读地图](UPSTREAM.md)、[实现进度](PROGRESS.md)
+- [M7 故障注入与技术说明](docs/M7_FAULT_DEMO.md)
+- [演示流程](docs/DEMO_SCRIPT.md)
 
 ## 当前限制
 

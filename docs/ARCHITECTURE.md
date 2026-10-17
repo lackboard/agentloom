@@ -30,7 +30,7 @@ flowchart LR
 | --- | --- | --- |
 | LangChain/LangGraph | `create_agent`、ToolNode、消息、middleware hook、checkpoint | 状态字段、组装顺序、共享预算、审批/账本/权限、恢复语义 |
 | FastAPI | 路由、请求校验、lifespan、SSE 响应 | Run 入场幂等、后台任务所有权、事件协议、REST 投影 |
-| SQLAlchemy/Alembic/SQLite | ORM、事务、迁移、WAL | 九表业务约束、状态 CAS、事件序号、工具/审批去重 |
+| SQLAlchemy/Alembic/SQLite | ORM、事务、迁移、WAL | 十二表业务约束、状态 CAS、事件序号、工具/审批/回放去重 |
 | Docker | 容器进程与隔离原语 | 非 root、无网络、只读根、受控挂载、超时/取消清理 |
 | MCP SDK | stdio 协议、发现、调用 | 受信任 Server 配置、稳定命名、超时隔离、账本接入 |
 | React/TanStack Query | 页面、缓存与组件状态 | SSE reducer、刷新恢复、审批/任务/产物工作台、安全预览 |

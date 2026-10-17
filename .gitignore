@@ -9,6 +9,11 @@ config.local.yaml
 *.p12
 *.pfx
 
+# 本地开发、学习、计划与 Agent 交接文档
+# 根目录只公开 README；docs/ 下的产品文档和 skills/**/SKILL.md 仍是项目内容。
+/*.md
+!/README.md
+
 # AgentLoom 运行数据与本地产物
 .agentloom/
 output/
@@ -54,6 +59,7 @@ Desktop.ini
 
 # 临时文件
 .tools/
+/agentloom/
 *.tmp
 *.temp
 *.bak

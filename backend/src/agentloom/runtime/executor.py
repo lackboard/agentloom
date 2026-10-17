@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,11 +19,13 @@ from agentloom.runtime.context import LoomContext
 from agentloom.runtime.ledger import ToolLedgerService, tool_result_error_code
 from agentloom.runtime.manager import EventDraft, MessageProjection, RunManager, RunNotFound, UsageTotals
 from agentloom.runtime.projection import project_graph_messages, project_run_tail
+from agentloom.runtime.streaming import PersistentMessageStream
 from agentloom.sandbox import DockerCommandService, WorkspaceService
 from agentloom.skills import SkillLoader
 from agentloom.subagents import SubagentExecutor
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+logger = logging.getLogger(__name__)
 
 
 class RunRecoveryBlocked(RuntimeError):
@@ -43,9 +46,73 @@ class _UsageCollector(AsyncCallbackHandler):
     tool_events: list[EventDraft] = field(default_factory=list)
     _active_tools: dict[str, dict] = field(default_factory=dict)
     budget: RunBudgetController | None = None
+    manager: RunManager | None = None
+    run_id: str | None = None
+    root_span_id: str | None = None
+    model_name: str | None = None
+    _last_model_span_id: str | None = None
+
+    def bind_trace(self, manager: RunManager, *, run_id: str, model_name: str) -> None:
+        self.manager = manager
+        self.run_id = run_id
+        self.root_span_id = manager.root_span_id(run_id)
+        self.model_name = model_name
+
+    async def _trace_start(
+        self,
+        *,
+        span_id: str,
+        kind: str,
+        name: str,
+        attributes: dict,
+        parent_span_id: str | None = None,
+    ) -> None:
+        if self.manager is None or self.run_id is None:
+            return
+        try:
+            await self.manager.start_trace_span(
+                self.run_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id or self.root_span_id,
+                kind=kind,
+                name=name,
+                attributes=attributes,
+            )
+        except Exception:
+            # Trace 是诊断能力，不能把一次成功的模型/工具执行改写成业务失败。
+            logger.warning("无法开始 Trace Span", exc_info=True)
+
+    async def _trace_finish(
+        self,
+        *,
+        span_id: str,
+        status: str,
+        attributes: dict | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if self.manager is None or self.run_id is None:
+            return
+        try:
+            await self.manager.finish_trace_span(
+                self.run_id,
+                span_id=span_id,
+                status=status,
+                attributes=attributes,
+                error_code=error_code,
+            )
+        except Exception:
+            logger.warning("无法结束 Trace Span", exc_info=True)
 
     async def on_chat_model_start(self, serialized, messages, **kwargs) -> None:
         self.model_attempts += 1
+        span_id = str(kwargs.get("run_id"))
+        self._last_model_span_id = span_id
+        await self._trace_start(
+            span_id=span_id,
+            kind="model",
+            name=self.model_name or "chat-model",
+            attributes={"attempt": self.model_attempts},
+        )
 
     async def on_llm_end(self, response: LLMResult, **kwargs) -> None:
         input_tokens = 0
@@ -68,6 +135,22 @@ class _UsageCollector(AsyncCallbackHandler):
             self.reported_attempts += 1
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
+        await self._trace_finish(
+            span_id=str(kwargs.get("run_id")),
+            status="succeeded",
+            attributes={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "usage_reported": found,
+            },
+        )
+
+    async def on_llm_error(self, error, **kwargs) -> None:
+        await self._trace_finish(
+            span_id=str(kwargs.get("run_id")),
+            status="failed",
+            error_code=type(error).__name__,
+        )
 
     async def on_tool_start(self, serialized, input_str, **kwargs) -> None:
         self.tool_executions += 1
@@ -80,6 +163,13 @@ class _UsageCollector(AsyncCallbackHandler):
         }
         self._active_tools[callback_id] = call
         self.tool_events.append(EventDraft("tool.started", call.copy()))
+        await self._trace_start(
+            span_id=callback_id,
+            kind="tool",
+            name=str(call.get("name") or "tool"),
+            attributes={"tool_call_id": call.get("tool_call_id")},
+            parent_span_id=self._last_model_span_id,
+        )
 
     async def on_tool_end(self, output, **kwargs) -> None:
         callback_id = str(kwargs.get("run_id"))
@@ -100,6 +190,12 @@ class _UsageCollector(AsyncCallbackHandler):
                 },
             )
         )
+        await self._trace_finish(
+            span_id=callback_id,
+            status="failed" if error_code else "succeeded",
+            attributes={"tool_call_id": kwargs.get("tool_call_id") or call.get("tool_call_id")},
+            error_code=error_code,
+        )
 
     async def on_tool_error(self, error, **kwargs) -> None:
         callback_id = str(kwargs.get("run_id"))
@@ -114,6 +210,12 @@ class _UsageCollector(AsyncCallbackHandler):
                     "error": f"{type(error).__name__}: {error}",
                 },
             )
+        )
+        await self._trace_finish(
+            span_id=callback_id,
+            status="failed",
+            attributes={"tool_call_id": kwargs.get("tool_call_id") or call.get("tool_call_id")},
+            error_code=type(error).__name__,
         )
 
     def snapshot(self) -> UsageTotals:
@@ -215,6 +317,10 @@ class RunExecutor:
         return run.status
 
     def _forget(self, run_id: str, completed: asyncio.Task) -> None:
+        # 主动读取异常，避免“Task exception was never retrieved”；BaseException
+        # 可用于测试模拟进程骤停，此处只清理内存，不篡改数据库残留状态。
+        if not completed.cancelled():
+            completed.exception()
         if self._tasks.get(run_id) is completed:
             self._tasks.pop(run_id, None)
             self._usage.pop(run_id, None)
@@ -268,6 +374,8 @@ class RunExecutor:
                 run = await self.manager.get_run(run_id)
                 if run is None:
                     raise RunNotFound(run_id)
+                collector.bind_trace(self.manager, run_id=run.id, model_name=run.model_name)
+                await self.manager.start_root_trace(run.id)
                 collector.budget = RunBudgetController(
                     max_model_attempts=self.max_model_attempts,
                     max_tool_executions=self.max_tool_executions,
@@ -301,7 +409,7 @@ class RunExecutor:
                     }
                 else:
                     graph_input = Command(resume=resume)
-                result = await self.agent.ainvoke(
+                stream = self.agent.astream(
                     graph_input,
                     config={
                         "configurable": {"thread_id": run.thread_id},
@@ -321,7 +429,24 @@ class RunExecutor:
                         budget=collector.budget,
                         memories=self.memories,
                     ),
+                    stream_mode=["messages", "values"],
                 )
+                result = None
+                message_stream = PersistentMessageStream(self.manager, run.id)
+                try:
+                    async for mode, payload in stream:
+                        if mode == "messages":
+                            message, _metadata = payload
+                            await message_stream.add(message)
+                        elif mode == "values":
+                            result = payload
+                finally:
+                    try:
+                        await message_stream.close()
+                    finally:
+                        await stream.aclose()
+                if result is None:
+                    raise RuntimeError("Agent 流结束但没有最终 State")
                 interrupts = result.get("__interrupt__", [])
                 if interrupts:
                     await self._sync_actual_tool_attempts(run.id, collector, attempt_snapshot)
@@ -427,6 +552,15 @@ class RunExecutor:
     async def close(self) -> None:
         """优雅关闭时先持久化取消请求，再等待任务完成收尾。"""
         self._closing = True
+        # 给已经越过最后一个外部副作用的任务一个很短的收尾窗口。这样异常退出
+        # 能保留 running/uncertain 证据，由下次启动按恢复协议处理；长任务仍会取消。
+        if self._tasks:
+            await asyncio.wait(list(self._tasks.values()), timeout=0.05)
+        # done callback 由事件循环稍后调度；先剔除已经结束的 Task，不能把一次
+        # 已发生的异常退出误写成用户取消。遗留 running Run 会在下次启动时中断。
+        for run_id, task in list(self._tasks.items()):
+            if task.done():
+                self._forget(run_id, task)
         run_ids = list(self._tasks)
         for run_id in run_ids:
             try:

@@ -1,5 +1,6 @@
 """Run 入场、状态迁移、展示投影和持久化事件。"""
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -11,7 +12,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agentloom.persistence.models import ApprovalRow, ArtifactRow, MessageRow, RunEventRow, RunRow, ThreadRow
+from agentloom.persistence.events import append_run_event
+from agentloom.persistence.models import (
+    ApprovalRow,
+    ArtifactRow,
+    MessageRow,
+    RunEventRow,
+    RunRow,
+    ThreadRow,
+    TraceSpanRow,
+)
 
 
 class ThreadNotFound(Exception):
@@ -89,6 +99,9 @@ class RunManager:
         self.config_snapshot_json = _json(config_snapshot or {})
         self.budget_json = _json(budget or {})
         self.event_notifier = event_notifier
+        # 模型与工具 callback 可能并发写 span/增量；SQLite 没有行级锁，
+        # 因此只串行化这些很短的事件事务，不阻塞模型和工具本身。
+        self._live_write_lock = asyncio.Lock()
 
     def _notify(self, run_id: str) -> None:
         """事务提交后只负责唤醒订阅者；事件真相仍在数据库中。"""
@@ -96,18 +109,14 @@ class RunManager:
             self.event_notifier(run_id)
 
     @staticmethod
-    def _append_event(session, run: RunRow, draft: EventDraft) -> None:
-        seq = run.next_event_seq
-        run.next_event_seq += 1
-        session.add(
-            RunEventRow(
-                run_id=run.id,
-                seq=seq,
-                event_type=draft.event_type,
-                scope=draft.scope,
-                payload_json=_json(draft.data),
-                created_at=_now(),
-            )
+    async def _append_event(session, run: RunRow, draft: EventDraft) -> None:
+        await append_run_event(
+            session,
+            run_id=run.id,
+            event_type=draft.event_type,
+            scope=draft.scope,
+            payload_json=_json(draft.data),
+            created_at=_now(),
         )
 
     @staticmethod
@@ -122,6 +131,162 @@ class RunManager:
                 "complete": usage.complete,
             },
         )
+
+    @staticmethod
+    def root_span_id(run_id: str) -> str:
+        return f"run:{run_id}"
+
+    @staticmethod
+    def _span_data(span: TraceSpanRow) -> dict:
+        return {
+            "span_id": span.id,
+            "trace_id": span.trace_id,
+            "parent_span_id": span.parent_span_id,
+            "kind": span.kind,
+            "name": span.name,
+            "status": span.status,
+            "attributes": json.loads(span.attributes_json),
+            "started_at": span.started_at,
+            "finished_at": span.finished_at,
+            "duration_ms": span.duration_ms,
+            "error_code": span.error_code,
+        }
+
+    async def append_message_delta(self, run_id: str, message_id: str, delta: str) -> bool:
+        """把已经合并的小文本批次作为持久事件写入；空批次不会占用序号。"""
+        if not delta:
+            return False
+        async with self._live_write_lock:
+            async with self.sessions.begin() as session:
+                run = await session.get(RunRow, run_id)
+                if run is None:
+                    raise RunNotFound(run_id)
+                if run.status != "running":
+                    return False
+                await self._append_event(
+                    session,
+                    run,
+                    EventDraft(
+                        "message.delta",
+                        {"message_id": message_id, "role": "assistant", "delta": delta, "status": "partial"},
+                    ),
+                )
+        self._notify(run_id)
+        return True
+
+    async def start_trace_span(
+        self,
+        run_id: str,
+        *,
+        span_id: str,
+        parent_span_id: str | None,
+        kind: str,
+        name: str,
+        attributes: dict | None = None,
+    ) -> None:
+        """幂等开始一个安全 Span，并将同一事实写入可重连事件流。"""
+        async with self._live_write_lock:
+            async with self.sessions.begin() as session:
+                run = await session.get(RunRow, run_id)
+                if run is None:
+                    raise RunNotFound(run_id)
+                existing = await session.get(TraceSpanRow, span_id)
+                if existing is not None:
+                    return
+                span = TraceSpanRow(
+                    id=span_id,
+                    trace_id=run.trace_id,
+                    run_id=run.id,
+                    parent_span_id=parent_span_id,
+                    kind=kind,
+                    name=name[:200],
+                    status="running",
+                    attributes_json=_json(attributes or {}),
+                    started_at=_now(),
+                    finished_at=None,
+                    duration_ms=None,
+                    error_code=None,
+                )
+                session.add(span)
+                await session.flush()
+                await self._append_event(session, run, EventDraft("trace.span.started", self._span_data(span)))
+        self._notify(run_id)
+
+    async def finish_trace_span(
+        self,
+        run_id: str,
+        *,
+        span_id: str,
+        status: str,
+        attributes: dict | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """幂等结束一个 Span；只合并安全属性，不保存模型或工具正文。"""
+        async with self._live_write_lock:
+            async with self.sessions.begin() as session:
+                run = await session.get(RunRow, run_id)
+                span = await session.get(TraceSpanRow, span_id)
+                if run is None or span is None or span.run_id != run_id or span.finished_at is not None:
+                    return
+                finished_at = _now()
+                started = datetime.fromisoformat(span.started_at)
+                finished = datetime.fromisoformat(finished_at)
+                merged = json.loads(span.attributes_json)
+                merged.update(attributes or {})
+                span.status = status
+                span.attributes_json = _json(merged)
+                span.finished_at = finished_at
+                span.duration_ms = max(0, int((finished - started).total_seconds() * 1000))
+                span.error_code = error_code
+                await session.flush()
+                await self._append_event(session, run, EventDraft("trace.span.finished", self._span_data(span)))
+        self._notify(run_id)
+
+    async def start_root_trace(self, run_id: str) -> None:
+        run = await self.get_run(run_id)
+        if run is None:
+            raise RunNotFound(run_id)
+        await self.start_trace_span(
+            run_id,
+            span_id=self.root_span_id(run_id),
+            parent_span_id=None,
+            kind="run",
+            name="agentloom.run",
+            attributes={"model": run.model_name},
+        )
+
+    async def get_trace_spans(self, run_id: str) -> list[TraceSpanRow]:
+        async with self.sessions() as session:
+            if await session.get(RunRow, run_id) is None:
+                raise RunNotFound(run_id)
+            rows = await session.scalars(
+                select(TraceSpanRow)
+                .where(TraceSpanRow.run_id == run_id)
+                .order_by(TraceSpanRow.started_at, TraceSpanRow.id)
+            )
+            return list(rows)
+
+    async def _finish_root_trace_in_transaction(
+        self,
+        session,
+        run: RunRow,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> None:
+        """让根 Span 终态与 Run 终态共享事务，避免时间线看见半套结果。"""
+        span = await session.get(TraceSpanRow, self.root_span_id(run.id))
+        if span is None or span.finished_at is not None:
+            return
+        finished_at = _now()
+        started = datetime.fromisoformat(span.started_at)
+        finished = datetime.fromisoformat(finished_at)
+        span.status = status
+        span.finished_at = finished_at
+        span.duration_ms = max(0, int((finished - started).total_seconds() * 1000))
+        span.error_code = error_code
+        await session.flush()
+        await self._append_event(session, run, EventDraft("trace.span.finished", self._span_data(span)))
 
     async def create_thread(self, *, title: str = "New thread", profile: str = "default") -> ThreadRow:
         now = _now()
@@ -220,6 +385,7 @@ class RunManager:
                 )
                 row = RunRow(
                     id=run_id,
+                    trace_id=uuid4().hex,
                     thread_id=thread_id,
                     client_request_id=client_request_id,
                     request_hash=request_hash,
@@ -309,7 +475,7 @@ class RunManager:
                 return False
             run = await session.get(RunRow, run_id)
             assert run is not None
-            self._append_event(session, run, EventDraft("run.started", {"status": "running"}))
+            await self._append_event(session, run, EventDraft("run.started", {"status": "running"}))
         self._notify(run_id)
         return True
 
@@ -344,8 +510,8 @@ class RunManager:
             approval.checkpoint_id = checkpoint_id
             run = await session.get(RunRow, run_id, populate_existing=True)
             assert run is not None
-            self._append_event(session, run, self._usage_event(usage))
-            self._append_event(
+            await self._append_event(session, run, self._usage_event(usage))
+            await self._append_event(
                 session,
                 run,
                 EventDraft(
@@ -387,7 +553,7 @@ class RunManager:
                 if result.rowcount == 1:
                     run = await session.get(RunRow, run_id, populate_existing=True)
                     assert run is not None
-                    self._append_event(
+                    await self._append_event(
                         session,
                         run,
                         EventDraft(
@@ -411,7 +577,7 @@ class RunManager:
             if result.rowcount == 1:
                 run = await session.get(RunRow, run_id, populate_existing=True)
                 assert run is not None
-                self._append_event(session, run, EventDraft("run.recovered", {"status": "running"}))
+                await self._append_event(session, run, EventDraft("run.recovered", {"status": "running"}))
         if result.rowcount == 1:
             self._notify(run_id)
         return result.rowcount == 1
@@ -462,7 +628,7 @@ class RunManager:
                     )
                 )
                 next_message_seq += 1
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -476,11 +642,12 @@ class RunManager:
                     ),
                 )
                 for draft in projection.events:
-                    self._append_event(session, run, draft)
+                    await self._append_event(session, run, draft)
             for draft in events or []:
-                self._append_event(session, run, draft)
-            self._append_event(session, run, self._usage_event(usage))
-            self._append_event(
+                await self._append_event(session, run, draft)
+            await self._append_event(session, run, self._usage_event(usage))
+            await self._finish_root_trace_in_transaction(session, run, status="succeeded")
+            await self._append_event(
                 session,
                 run,
                 EventDraft("run.finished", {"status": "succeeded", "stop_reason": "completed"}),
@@ -524,7 +691,7 @@ class RunManager:
                 existing.add(projection.id)
                 next_message_seq += 1
                 inserted += 1
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -574,9 +741,15 @@ class RunManager:
             run = await session.get(RunRow, run_id)
             assert run is not None
             for draft in events or []:
-                self._append_event(session, run, draft)
-            self._append_event(session, run, self._usage_event(usage))
-            self._append_event(
+                await self._append_event(session, run, draft)
+            await self._append_event(session, run, self._usage_event(usage))
+            await self._finish_root_trace_in_transaction(
+                session,
+                run,
+                status="failed",
+                error_code="AGENT_EXECUTION_FAILED",
+            )
+            await self._append_event(
                 session,
                 run,
                 EventDraft(
@@ -654,7 +827,7 @@ class RunManager:
                     )
                 )
                 next_message_seq += 1
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -667,8 +840,9 @@ class RunManager:
                         },
                     ),
                 )
-            self._append_event(session, run, self._usage_event(usage))
-            self._append_event(
+            await self._append_event(session, run, self._usage_event(usage))
+            await self._finish_root_trace_in_transaction(session, run, status="cancelled", error_code="RUN_CANCELLED")
+            await self._append_event(
                 session,
                 run,
                 EventDraft("run.finished", {"status": "cancelled", "stop_reason": "user_cancelled"}),

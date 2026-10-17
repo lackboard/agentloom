@@ -229,6 +229,28 @@ class DockerCommandService:
             await asyncio.shield(self._remove(container_name))
             await self._forget(run_id, container_name)
 
+    async def execute_task(
+        self,
+        *,
+        parent_thread_id: str,
+        task_id: str,
+        run_id: str,
+        command: str,
+    ) -> DockerCommandResult:
+        """在 Coder 私有任务目录验证，不把父工作区挂进容器。"""
+        task_threads_root = (self.threads_root / parent_thread_id / "tasks").resolve()
+        try:
+            task_threads_root.relative_to(self.threads_root)
+        except ValueError as exc:
+            raise DockerSandboxError("Coder 任务目录超出受控根目录") from exc
+        verifier = DockerCommandService(task_threads_root, self.config, executable=self.executable)
+        return await verifier.execute(
+            thread_id=task_id,
+            run_id=run_id,
+            tool_call_id=f"coder-verify:{task_id}",
+            command=command,
+        )
+
     async def cancel_run(self, run_id: str) -> None:
         """强制删除该 Run 的容器；返回时 Docker 已确认清理命令结束。"""
         async with self._lock:

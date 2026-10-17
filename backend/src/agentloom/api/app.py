@@ -18,6 +18,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agentloom.agents.factory import create_loom_agent
 from agentloom.api.schemas import (
+    CreateCoderChangeProposal,
     CreateMemory,
     CreateThread,
     DeleteMemory,
@@ -55,9 +56,11 @@ from agentloom.runtime.manager import (
     ThreadBusy,
     ThreadNotFound,
 )
+from agentloom.runtime.replay import ReplayNotFound, ReplayService, ReplayUnsafe
 from agentloom.sandbox import DockerCommandService, WorkspaceError, WorkspaceService
 from agentloom.skills import SkillLoader
 from agentloom.subagents import SubagentExecutor, SubagentTaskRepository
+from agentloom.subagents.changes import CoderChangeConflict, CoderChangeNotFound, CoderChangeService
 from agentloom.tools import get_builtin_tools
 
 
@@ -116,6 +119,24 @@ def _artifact_payload(record) -> dict:
     }
 
 
+def _coder_change_payload(record) -> dict:
+    """返回可审计提案；manifest 只含虚拟路径、hash、diff 和验证命令。"""
+    return {
+        "proposal_id": record.id,
+        "task_id": record.task_id,
+        "run_id": record.run_id,
+        "thread_id": record.thread_id,
+        "approval_id": record.approval_id,
+        "status": record.status,
+        "manifest_hash": record.manifest_hash,
+        "manifest": record.manifest,
+        "verification": record.verification,
+        "error": None if record.error_code is None else {"code": record.error_code, "message": record.error_message},
+        "created_at": record.created_at,
+        "resolved_at": record.resolved_at,
+    }
+
+
 def create_app(
     data_dir: Path | None = None,
     config: AppConfig | None = None,
@@ -161,6 +182,8 @@ def create_app(
         app.state.ledger = ledger
         app.state.approvals = approvals
         app.state.docker = docker
+        app.state.replays = ReplayService(sessions)
+        app.state.coder_changes = CoderChangeService(sessions, workspace, docker, event_notifier=broker.notify)
         app.state.skills = skills
         app.state.memories = memories
         app.state.mcp = mcp
@@ -398,6 +421,7 @@ def create_app(
         request.app.state.executor.start(run.id)
         return {
             "run_id": run.id,
+            "trace_id": run.trace_id,
             "thread_id": run.thread_id,
             "status": run.status,
             "events_url": f"/api/runs/{run.id}/events",
@@ -411,6 +435,7 @@ def create_app(
         pending_approval = await request.app.state.approvals.pending_for_run(run_id)
         return {
             "run_id": run.id,
+            "trace_id": run.trace_id,
             "thread_id": run.thread_id,
             "status": run.status,
             "stop_reason": run.stop_reason,
@@ -424,6 +449,58 @@ def create_app(
             },
             "pending_approval_id": None if pending_approval is None else pending_approval.id,
         }
+
+    @app.get("/api/runs/{run_id}/trace")
+    async def get_run_trace(run_id: str, request: Request):
+        """返回按开始时间排序的扁平 Span；客户端按 parent_span_id 组装调用树。"""
+        run = await request.app.state.manager.get_run(run_id)
+        if run is None:
+            return _error("RUN_NOT_FOUND", "Run does not exist", 404)
+        spans = await request.app.state.manager.get_trace_spans(run_id)
+        return {
+            "trace_id": run.trace_id,
+            "root_span_id": request.app.state.manager.root_span_id(run_id),
+            "spans": [
+                {
+                    "span_id": span.id,
+                    "parent_span_id": span.parent_span_id,
+                    "kind": span.kind,
+                    "name": span.name,
+                    "status": span.status,
+                    "attributes": json.loads(span.attributes_json),
+                    "started_at": span.started_at,
+                    "finished_at": span.finished_at,
+                    "duration_ms": span.duration_ms,
+                    "error_code": span.error_code,
+                }
+                for span in spans
+            ],
+        }
+
+    @app.post("/api/runs/{run_id}/replays", status_code=201)
+    async def create_run_replay(run_id: str, request: Request):
+        """冻结历史证据；该入口不会再次调用模型或任何工具。"""
+        try:
+            record = await request.app.state.replays.create(run_id)
+        except ReplayNotFound as exc:
+            return _error(exc.code, str(exc), 404)
+        except ReplayUnsafe as exc:
+            return _error(exc.code, str(exc), 409)
+        return {
+            "replay_id": record.id,
+            "source_run_id": record.source_run_id,
+            "status": record.status,
+            "evidence_hash": record.evidence_hash,
+            "evidence": record.evidence,
+            "created_at": record.created_at,
+        }
+
+    @app.get("/api/run-comparisons")
+    async def compare_runs(request: Request, left_run_id: str = Query(), right_run_id: str = Query()):
+        try:
+            return await request.app.state.replays.compare(left_run_id, right_run_id)
+        except ReplayNotFound as exc:
+            return _error(exc.code, str(exc), 404)
 
     @app.get("/api/runs/{run_id}/tool-executions")
     async def get_tool_executions(run_id: str, request: Request):
@@ -478,6 +555,18 @@ def create_app(
             ]
         }
 
+    @app.post("/api/subagents/{task_id}/change-proposals", status_code=201)
+    async def create_coder_change(task_id: str, body: CreateCoderChangeProposal, request: Request):
+        try:
+            proposal, approval = await request.app.state.coder_changes.create(
+                task_id, verification_command=body.verification_command
+            )
+        except CoderChangeNotFound as exc:
+            return _error(exc.code, str(exc), 404)
+        except CoderChangeConflict as exc:
+            return _error(exc.code, str(exc), 409)
+        return {"proposal": _coder_change_payload(proposal), "approval": _approval_payload(approval)}
+
     @app.post("/api/approvals/{approval_id}/resolve")
     async def resolve_approval(approval_id: str, body: ResolveApproval, request: Request):
         try:
@@ -491,6 +580,12 @@ def create_app(
             return _error("APPROVAL_NOT_FOUND", "Approval does not exist", 404)
         except (ApprovalConflict, ApprovalNotReady) as exc:
             return _error(exc.code, str(exc), 409)
+        if record.kind == "coder_change":
+            try:
+                proposal = await request.app.state.coder_changes.resolve(record)
+            except CoderChangeConflict as exc:
+                return _error(exc.code, str(exc), 409)
+            return {**_approval_payload(record), "coder_change": _coder_change_payload(proposal)}
         request.app.state.executor.resume(record)
         return _approval_payload(record)
 

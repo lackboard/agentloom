@@ -3,6 +3,7 @@ import type {
   Artifact,
   MessageItem,
   RunDetail,
+  RunTrace,
   SubagentTask,
   ThreadItem,
   ToolExecution,
@@ -43,9 +44,12 @@ export const api = {
   getMessages: (threadId: string) => request<{ items: MessageItem[] }>(`/api/threads/${threadId}/messages`),
   getArtifacts: (threadId: string) => request<{ items: Artifact[] }>(`/api/threads/${threadId}/artifacts`),
   getRun: (runId: string) => request<RunDetail>(`/api/runs/${runId}`),
+  getTrace: (runId: string) => request<RunTrace>(`/api/runs/${runId}/trace`),
   getApprovals: (runId: string) => request<{ items: Approval[] }>(`/api/runs/${runId}/approvals`),
   getTools: (runId: string) => request<{ items: ToolExecution[] }>(`/api/runs/${runId}/tool-executions`),
   getSubagents: (runId: string) => request<{ items: SubagentTask[] }>(`/api/runs/${runId}/subagents`),
+  createCoderChange: (taskId: string) =>
+    request(`/api/subagents/${taskId}/change-proposals`, json({})),
   submitRun: (threadId: string, text: string, attachmentIds: string[]) =>
     request<{ run_id: string; status: string }>(
       `/api/threads/${threadId}/runs`,

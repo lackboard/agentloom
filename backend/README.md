@@ -13,6 +13,7 @@ uv run python labs/m2_approval_demo.py
 uv run python labs/m2_csv_demo.py
 uv run python labs/m3_skills_demo.py
 uv run python labs/m3_context_demo.py
+uv run python labs/m7_fault_demo.py
 uv run pytest -m "not live and not docker"
 uv run ruff check .
 uv run ruff format --check .
@@ -83,6 +84,9 @@ uv run uvicorn agentloom.api:create_app --factory --host 127.0.0.1 --port 8000
 - `POST /api/threads/{thread_id}/uploads`：上传并登记线程只读文件。
 - `GET /api/threads/{thread_id}/artifacts`：列出右侧文件面板所需的上传与输出快照。
 - `GET /api/runs/{run_id}/subagents`：恢复当前 Run 的子任务卡片。
+- `POST /api/runs/{run_id}/replays`：冻结终态 Run 的历史消息、事件和工具结果证据；不会重跑模型或工具。
+- `GET /api/run-comparisons?left_run_id=...&right_run_id=...`：比较两个 Run 的用量、耗时、工具、Span 和产物 hash。
+- `POST /api/subagents/{task_id}/change-proposals`：为成功 Coder 子任务生成服务端 diff/hash 审批；批准后先做 Docker 验证，再接纳父工作区。
 - `GET /api/artifacts/{artifact_id}`：读取产物元数据，不返回宿主机路径。
 - `GET /api/artifacts/{artifact_id}/content`：校验 SHA-256 后下载快照。
 - `GET /api/tools`：列出内置/MCP 工具及 MCP Server 的有限诊断信息。
@@ -124,3 +128,7 @@ uv run python -m agentloom.evaluation `
 ```
 
 `--require-live` 会在 provider 为 fake 时返回 NOT_RUN，防止把离线模型冒充真实评测。JSON 保存逐题观察和失败；Markdown 保存摘要。对照任务用 `evaluations/comparison_tasks.json --repeat 3`。已运行结果见根目录 `docs/M6_EVALUATION.md`。
+
+## M7 故障演示
+
+`uv run python labs/m7_fault_demo.py` 通过替换模型/Docker 依赖和模拟工具账本崩溃窗口，检查模型失败 Trace 收口、uncertain 写操作不盲重放、Coder 验证失败不修改父目录。报告写入根目录 `output/m7-fault-demo/`，任一不变量失败时返回非零。它明确属于 fake 故障注入；`labs/live_api_smoke.py` 另行验证真实模型正常路径。

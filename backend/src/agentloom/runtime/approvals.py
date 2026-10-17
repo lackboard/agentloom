@@ -11,7 +11,8 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agentloom.persistence.models import ApprovalRow, RunEventRow, RunRow
+from agentloom.persistence.events import append_run_event
+from agentloom.persistence.models import ApprovalRow, RunRow
 from agentloom.runtime.ledger import ToolExecutionRecord, ToolLedgerService, canonical_json, replay_class_for
 from agentloom.sandbox import WorkspaceError, WorkspaceService
 
@@ -339,19 +340,13 @@ class ApprovalService:
                 run = await session.get(RunRow, row.run_id)
                 if run is None:
                     raise ApprovalConflict("审批所属 Run 不存在")
-                seq = run.next_event_seq
-                run.next_event_seq += 1
-                session.add(
-                    RunEventRow(
-                        run_id=run.id,
-                        seq=seq,
-                        event_type="approval.resolved",
-                        scope="lead",
-                        payload_json=canonical_json(
-                            {"approval_id": row.id, "status": row.status, "decision": decision}
-                        ),
-                        created_at=now,
-                    )
+                await append_run_event(
+                    session,
+                    run_id=run.id,
+                    event_type="approval.resolved",
+                    scope="lead",
+                    payload_json=canonical_json({"approval_id": row.id, "status": row.status, "decision": decision}),
+                    created_at=now,
                 )
             record = ApprovalRecord.from_row(row)
         if newly_resolved:

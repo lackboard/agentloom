@@ -36,12 +36,32 @@ export interface MessageItem {
 
 export interface RunDetail {
   run_id: string;
+  trace_id: string;
   thread_id: string;
   status: RunStatus;
   stop_reason: string | null;
   error: { code: string; message: string } | null;
   usage: Usage;
   pending_approval_id: string | null;
+}
+
+export interface TraceSpan {
+  span_id: string;
+  parent_span_id: string | null;
+  kind: "run" | "model" | "tool";
+  name: string;
+  status: string;
+  attributes: Record<string, unknown>;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  error_code: string | null;
+}
+
+export interface RunTrace {
+  trace_id: string;
+  root_span_id: string;
+  spans: TraceSpan[];
 }
 
 export interface Usage {

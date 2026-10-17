@@ -45,6 +45,14 @@ class ResolveToolExecution(BaseModel):
     evidence: list[FileEvidence] = Field(default_factory=list, max_length=20)
 
 
+class CreateCoderChangeProposal(BaseModel):
+    """可覆盖 Coder 建议的验证命令；最终命令仍会冻结进审批 hash。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verification_command: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
 class CreateMemory(BaseModel):
     """用户通过 API 明确保存一条偏好。"""
 

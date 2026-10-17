@@ -1,4 +1,4 @@
-"""用本机真实 provider 验证 M1 API worker、幂等、持久化事件与 usage。"""
+"""用本机真实 provider 验证 API worker、持久流、Trace、幂等与 usage。"""
 
 import json
 import sys
@@ -75,10 +75,24 @@ def main() -> int:
                     raise RuntimeError("持久化消息中没有 add 的真实结果 15")
                 if not any(event["type"] == "tool.finished" for event in events_after):
                     raise RuntimeError("持久化事件中没有 tool.finished")
+                deltas = [event["data"]["delta"] for event in events_after if event["type"] == "message.delta"]
+                if not deltas or not "".join(deltas).strip():
+                    raise RuntimeError("真实模型没有产生可回放的 message.delta")
+                trace = client.get(f"/api/runs/{run_id}/trace").json()
+                spans = trace["spans"]
+                if not trace["trace_id"] or not any(span["kind"] == "model" for span in spans):
+                    raise RuntimeError("真实 Run 没有形成模型 Trace Span")
+                if not any(span["kind"] == "tool" and span["name"] == "add" for span in spans):
+                    raise RuntimeError("真实 add 调用没有形成工具 Trace Span")
+                if any(span["status"] == "running" for span in spans):
+                    raise RuntimeError("真实 Run 结束后仍有未关闭的 Trace Span")
 
                 print(f"run: {run['status']} same_run=True conflict=409")
                 print(f"usage: {run['usage']}")
-                print(f"messages: {len(messages_after)} events: {len(events_after)}")
+                print(
+                    f"messages: {len(messages_after)} events: {len(events_after)} "
+                    f"deltas: {len(deltas)} spans: {len(spans)}"
+                )
                 print("LIVE API: PASS")
                 return 0
     except ConfigurationError as exc:

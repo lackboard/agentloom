@@ -9,7 +9,8 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agentloom.persistence.models import RunEventRow, RunRow, SubagentTaskRow
+from agentloom.persistence.events import append_run_event
+from agentloom.persistence.models import RunRow, SubagentTaskRow
 from agentloom.runtime.manager import EventDraft
 from agentloom.subagents.contracts import AgentType, SubagentResult
 
@@ -70,18 +71,14 @@ class SubagentTaskRepository:
         self._write_lock = asyncio.Lock()
 
     @staticmethod
-    def _append_event(session, run: RunRow, draft: EventDraft) -> None:
-        seq = run.next_event_seq
-        run.next_event_seq += 1
-        session.add(
-            RunEventRow(
-                run_id=run.id,
-                seq=seq,
-                event_type=draft.event_type,
-                scope=draft.scope,
-                payload_json=_json(draft.data),
-                created_at=_now(),
-            )
+    async def _append_event(session, run: RunRow, draft: EventDraft) -> None:
+        await append_run_event(
+            session,
+            run_id=run.id,
+            event_type=draft.event_type,
+            scope=draft.scope,
+            payload_json=_json(draft.data),
+            created_at=_now(),
         )
 
     def _notify(self, run_id: str) -> None:
@@ -149,7 +146,7 @@ class SubagentTaskRepository:
                 )
                 session.add(row)
                 await session.flush()
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -174,7 +171,7 @@ class SubagentTaskRepository:
                     return False
                 run = await session.get(RunRow, row.run_id)
                 assert run is not None
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -218,7 +215,7 @@ class SubagentTaskRepository:
                     return False
                 run = await session.get(RunRow, row.run_id)
                 assert run is not None
-                self._append_event(
+                await self._append_event(
                     session,
                     run,
                     EventDraft(
@@ -264,7 +261,7 @@ class SubagentTaskRepository:
                     row.result_json = _json(result.model_dump(mode="json"))
                     row.acceptance_json = _json(result.acceptance)
                     row.finished_at = _now()
-                    self._append_event(
+                    await self._append_event(
                         session,
                         run,
                         EventDraft(
@@ -304,7 +301,7 @@ class SubagentTaskRepository:
                     row.result_json = _json(result.model_dump(mode="json"))
                     row.acceptance_json = _json(result.acceptance)
                     row.finished_at = _now()
-                    self._append_event(
+                    await self._append_event(
                         session,
                         run,
                         EventDraft(

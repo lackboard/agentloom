@@ -108,9 +108,14 @@ def test_sse_reconnect_replays_missing_events_without_restarting_run(tmp_path) -
 
         # 模拟客户端已收到 seq=1/2 后断线；此时没有 SSE 连接持有后台任务。
         with sqlite3.connect(tmp_path / "app.sqlite") as connection:
-            assert connection.execute(
+            running_events = connection.execute(
                 "SELECT seq,event_type FROM run_events WHERE run_id=? ORDER BY seq", (run_id,)
-            ).fetchall() == [(1, "message.completed"), (2, "run.started")]
+            ).fetchall()
+            assert running_events[:2] == [(1, "message.completed"), (2, "run.started")]
+            assert [event_type for _, event_type in running_events[2:]] == [
+                "trace.span.started",
+                "trace.span.started",
+            ]
         model.release.set()
         finished = _wait_status(client, run_id, {"succeeded"})
 

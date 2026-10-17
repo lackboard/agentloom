@@ -8,6 +8,7 @@ import { api } from "./api";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { SafeMarkdown } from "./components/SafeMarkdown";
+import { TraceTimeline } from "./components/TraceTimeline";
 import { emptyRunState, hydrateMessages, reduceRunEvent } from "./run-state";
 import type { Approval, Artifact, RunEvent, RunStatus } from "./types";
 import { useRunEvents } from "./use-run-events";
@@ -57,6 +58,7 @@ export default function App() {
   const artifacts = useQuery({ queryKey: ["artifacts", threadId], queryFn: () => api.getArtifacts(threadId!), enabled: !!threadId });
   const runId = runIdOverride ?? thread.data?.latest_run?.run_id ?? null;
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.getRun(runId!), enabled: !!runId });
+  const trace = useQuery({ queryKey: ["trace", runId], queryFn: () => api.getTrace(runId!), enabled: !!runId });
   const approvals = useQuery({ queryKey: ["approvals", runId], queryFn: () => api.getApprovals(runId!), enabled: !!runId });
   const tools = useQuery({ queryKey: ["tools", runId], queryFn: () => api.getTools(runId!), enabled: !!runId });
   const subtasks = useQuery({ queryKey: ["subagents", runId], queryFn: () => api.getSubagents(runId!), enabled: !!runId });
@@ -74,6 +76,7 @@ export default function App() {
     if (!event || event.type.startsWith("approval.")) queryClient.invalidateQueries({ queryKey: ["approvals", runId] });
     if (!event || event.type.startsWith("tool.")) queryClient.invalidateQueries({ queryKey: ["tools", runId] });
     if (!event || event.type.startsWith("subagent.")) queryClient.invalidateQueries({ queryKey: ["subagents", runId] });
+    if (!event || event.type.startsWith("trace.") || event.type === "run.finished") queryClient.invalidateQueries({ queryKey: ["trace", runId] });
     if (!event || event.type === "run.started" || event.type.startsWith("approval.")) {
       queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
       queryClient.invalidateQueries({ queryKey: ["threads"] });
@@ -116,6 +119,10 @@ export default function App() {
     mutationFn: ({ approval, decision }: { approval: Approval; decision: "approve" | "reject" }) => api.resolveApproval(approval, decision),
     onSuccess: () => refreshRunData(),
   });
+  const proposeCoderChange = useMutation({
+    mutationFn: (taskId: string) => api.createCoderChange(taskId),
+    onSuccess: () => refreshRunData(),
+  });
   const upload = useMutation({
     mutationFn: async (file: File) => {
       let activeThread = threadId;
@@ -135,7 +142,7 @@ export default function App() {
     .map((id) => view.messages[id])
     .filter((message) => message && message.role !== "tool" && String(message.content.text ?? "").trim());
   const running = ACTIVE.includes(view.status ?? "succeeded");
-  const eventGroups = useMemo(() => view.timeline.filter((item) => !item.type.startsWith("message.")), [view.timeline]);
+  const eventGroups = useMemo(() => view.timeline.filter((item) => !item.type.startsWith("message.") && !item.type.startsWith("trace.")), [view.timeline]);
 
   const onSubmit = () => {
     if (!draft.trim() || submit.isPending || running) return;
@@ -180,8 +187,9 @@ export default function App() {
             </article>
           ))}
           {currentApproval && <ApprovalCard approval={currentApproval} busy={resolve.isPending} onDecision={(decision) => resolve.mutate({ approval: currentApproval, decision })} />}
+          <TraceTimeline spans={trace.data?.spans ?? []} />
           {eventGroups.length > 0 && (
-            <section className="timeline"><div className="timeline-title"><Activity size={16} />执行轨迹</div>{eventGroups.map((event) => (
+            <section className="timeline"><div className="timeline-title"><Activity size={16} />持久事件</div>{eventGroups.map((event) => (
               <details key={event.key} className="event-row"><summary><span className="event-dot" /><strong>{event.type}</strong><small>{event.scope} · {shortTime(event.timestamp)}</small></summary><JsonBlock value={event.data} /></details>
             ))}</section>
           )}
@@ -207,7 +215,7 @@ export default function App() {
         <div className="inspector-tabs"><button className={rightTab === "tasks" ? "active" : ""} onClick={() => setRightTab("tasks")}><ListTodo size={16} />任务</button><button className={rightTab === "files" ? "active" : ""} onClick={() => setRightTab("files")}><Paperclip size={16} />文件</button></div>
         {rightTab === "files" ? <ArtifactPanel artifacts={artifacts.data?.items ?? []} /> : <div className="task-panel">
           <section className="panel-section"><h3><ListTodo size={16} />计划</h3>{thread.data?.todos.length ? thread.data.todos.map((todo) => <div className="todo-row" key={todo.id}><span className={`todo-check ${todo.status}`} /> <span>{todo.text}</span><small>{todo.status}</small></div>) : <p className="empty-copy">Agent 建立计划后会显示在这里。</p>}</section>
-          <section className="panel-section"><h3><Bot size={16} />子任务</h3>{subtasks.data?.items.length ? subtasks.data.items.map((task) => <article className="subtask-card" key={task.task_id}><div><strong>{task.agent_type}</strong><span className={`mini-status ${task.status}`}>{task.status}</span></div><p>{task.prompt}</p>{task.result && <JsonBlock value={task.result} />}</article>) : <p className="empty-copy">尚未委派子 Agent。</p>}</section>
+          <section className="panel-section"><h3><Bot size={16} />子任务</h3>{subtasks.data?.items.length ? subtasks.data.items.map((task) => <article className="subtask-card" key={task.task_id}><div><strong>{task.agent_type}</strong><span className={`mini-status ${task.status}`}>{task.status}</span></div><p>{task.prompt}</p>{task.result && <JsonBlock value={task.result} />}{task.agent_type === "coder" && task.status === "succeeded" && <button className="button ghost" disabled={proposeCoderChange.isPending} onClick={() => proposeCoderChange.mutate(task.task_id)}>生成变更提案</button>}</article>) : <p className="empty-copy">尚未委派子 Agent。</p>}{proposeCoderChange.error && <p className="inline-error">{proposeCoderChange.error.message}</p>}</section>
           <section className="panel-section"><h3><Wrench size={16} />工具</h3>{tools.data?.items.length ? tools.data.items.map((tool) => <details className="tool-card" key={tool.id}><summary><strong>{tool.tool_name}</strong><span className={`mini-status ${tool.status}`}>{tool.status}</span></summary><JsonBlock value={{ args: tool.args, result: tool.result, error: tool.error_code }} /></details>) : <p className="empty-copy">工具调用会按真实账本显示。</p>}</section>
           <section className="panel-section run-facts"><h3><Clock3 size={16} />本次用量</h3><div><span>模型请求</span><strong>{view.usage?.model_attempts ?? 0}</strong><span>工具执行</span><strong>{view.usage?.tool_executions ?? 0}</strong></div></section>
         </div>}

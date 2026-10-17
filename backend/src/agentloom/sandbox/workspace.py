@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
@@ -89,6 +90,8 @@ class WorkspaceService:
         self.root = root.resolve()
         self.max_file_bytes = max_file_bytes
         self.max_list_entries = max_list_entries
+        # 同一进程内把普通写入、替换和多文件接纳放进同一临界区。
+        self._mutation_lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -325,7 +328,8 @@ class WorkspaceService:
         self._reject_link_components(target.parent, target)
 
         # 原子写入新文件（不覆盖已有文件）
-        self._write_new_bytes(target, encoded)
+        with self._mutation_lock:
+            self._write_new_bytes(target, encoded)
 
         # 返回写入结果描述：虚拟路径、内容、sha256、字节数
         return WorkspaceFile(
@@ -346,30 +350,82 @@ class WorkspaceService:
         expected_sha256: str,
     ) -> WorkspaceFile:
         """执行带内容 hash 的底层替换；M2.4 再由审批层调用。"""
-        _, target = self._resolve_virtual(thread_id, virtual_path, writable=True)
-        current = self.read_text(thread_id, virtual_path)
-        if current.sha256 != expected_sha256:
-            raise FileContentMismatch("文件内容已变化，旧前置条件失效")
-        if current.content.count(old) != 1:
-            raise FileContentMismatch("旧文本必须且只能出现一次")
-        encoded = current.content.replace(old, new, 1).encode("utf-8")
-        if len(encoded) > self.max_file_bytes:
-            raise FileTooLarge(f"替换结果超过 {self.max_file_bytes} 字节限制")
-        temporary = target.parent / f".{target.name}.{uuid4().hex}.tmp"
-        try:
-            with temporary.open("xb") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+        with self._mutation_lock:
+            _, target = self._resolve_virtual(thread_id, virtual_path, writable=True)
+            current = self.read_text(thread_id, virtual_path)
+            if current.sha256 != expected_sha256:
+                raise FileContentMismatch("文件内容已变化，旧前置条件失效")
+            if current.content.count(old) != 1:
+                raise FileContentMismatch("旧文本必须且只能出现一次")
+            encoded = current.content.replace(old, new, 1).encode("utf-8")
+            if len(encoded) > self.max_file_bytes:
+                raise FileTooLarge(f"替换结果超过 {self.max_file_bytes} 字节限制")
+            temporary = target.parent / f".{target.name}.{uuid4().hex}.tmp"
+            try:
+                with temporary.open("xb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
         return WorkspaceFile(
             virtual_path=virtual_path,
             content=encoded.decode("utf-8"),
             sha256=hashlib.sha256(encoded).hexdigest(),
             size_bytes=len(encoded),
         )
+
+    def apply_file_set(self, thread_id: str, changes: list[dict]) -> list[WorkspaceFile]:
+        """按旧 hash 接纳一组文件；任一发布失败时恢复本次已发布文件。"""
+        prepared: list[tuple[str, Path, bytes, str | None, bytes | None]] = []
+        with self._mutation_lock:
+            for change in changes:
+                virtual_path = str(change["path"])
+                content = bytes(change["content"])
+                expected = change.get("base_sha256")
+                namespace, target = self._resolve_virtual(thread_id, virtual_path, writable=True, must_exist=False)
+                if namespace != "workspace":
+                    raise PathOutOfScope("Coder 变更只能接纳到父 workspace")
+                old_content = None
+                if target.exists():
+                    old_content = self._read_stable_bytes(target, virtual_path)
+                    current_hash = hashlib.sha256(old_content).hexdigest()
+                    if expected is None or current_hash != expected:
+                        raise FileContentMismatch(f"父文件已变化：{virtual_path}")
+                elif expected is not None:
+                    raise FileContentMismatch(f"父文件已被删除：{virtual_path}")
+                prepared.append((virtual_path, target, content, expected, old_content))
+
+            published: list[tuple[Path, bytes | None]] = []
+            try:
+                for _virtual_path, target, content, _expected, old_content in prepared:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = target.parent / f".{target.name}.{uuid4().hex}.accept"
+                    try:
+                        with temporary.open("xb") as handle:
+                            handle.write(content)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(temporary, target)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    published.append((target, old_content))
+            except BaseException:
+                # 回滚也使用同目录临时文件，避免把半写文件暴露给后续工具。
+                for target, old_content in reversed(published):
+                    if old_content is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        rollback = target.parent / f".{target.name}.{uuid4().hex}.rollback"
+                        rollback.write_bytes(old_content)
+                        os.replace(rollback, target)
+                raise
+
+        return [
+            WorkspaceFile(path, content.decode("utf-8"), hashlib.sha256(content).hexdigest(), len(content))
+            for path, _target, content, _expected, _old in prepared
+        ]
 
     # 从 outputs 读取产物源文件
     def read_output_snapshot_source(self, thread_id: str, virtual_path: str) -> StableFile:

@@ -13,6 +13,8 @@ const EVENT_TYPES = [
   "subagent.started",
   "subagent.finished",
   "subagent.failed",
+  "trace.span.started",
+  "trace.span.finished",
   "usage.updated",
   "run.started",
   "run.waiting_input",

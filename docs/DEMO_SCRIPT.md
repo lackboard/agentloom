@@ -33,4 +33,14 @@
 3. 展示修复前真实内容块被投影为空、修复后同三题 3/3 的回归。
 4. 展示单/多 Agent 对照：短任务完成率相同，委派增加延迟和 Token，因此按任务复杂度选择。
 
-录制时应隐藏 `.env`、`config.yaml`、请求头和供应商控制台。视频文件生成后，在 `PROGRESS.md` 把 `NOT_RECORDED` 更新为实际路径和录制日期。
+录制时应隐藏 `.env`、`config.yaml`、请求头和供应商控制台。视频文件不进入 Git；如需公开，可在 README 中加入发布地址和录制日期。
+
+## M7 故障与证据演示（额外 2 分钟）
+
+先执行 `cd backend; uv run python labs/m7_fault_demo.py`，打开根目录的 `output/m7-fault-demo/report.md`：
+
+1. 展示模型流异常后 Run 与 model/root Span 全部 failed 且已关闭。
+2. 展示写文件后的进程退出被恢复为 uncertain，recover/replay 被阻止，hash 核验后 attempts 仍为 1。
+3. 展示 Coder Docker exit 1 后提案 failed，而父文件没有接纳候选内容。
+
+演示时明确说明这是 deterministic fake 故障注入；真实模型正常路径使用 `uv run python labs/live_api_smoke.py` 单独证明。
